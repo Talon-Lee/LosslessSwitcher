@@ -7,5 +7,5 @@
 
 import Foundation
 
-let currentBuild = Bundle.main.infoDictionary?["CFBundleVersion"] as! String
-let currentVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as! String
+let currentBuild = (Bundle.main.infoDictionary?["CFBundleVersion"] as? String) ?? "21"
+let currentVersion = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "2.0"

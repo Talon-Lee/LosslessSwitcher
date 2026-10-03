@@ -57,6 +57,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
     
     func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApp.setActivationPolicy(.regular)
         AppDelegate.instance = self
         outputDevices = OutputDevices()
         mrController = MediaRemoteController(outputDevices: outputDevices)
@@ -206,6 +207,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         Defaults.shared.shellScriptPath = nil
     }
     
+    func applicationWillTerminate(_ notification: Notification) {
+        print("[AppDelegate] App 即將終止，釋放音訊輸出裝置獨佔模式 (Hog Mode 寫回 0)...")
+        outputDevices?.releaseHogMode()
+        NSApp.dockTile.badgeLabel = nil
+    }
+    
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        NSApp.activate(ignoringOtherApps: true)
+        return true
+    }
 }
 
 extension AppDelegate: NSMenuDelegate {
