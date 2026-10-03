@@ -10,19 +10,16 @@
 
 This version introduces deep architectural improvements targeting **macOS Core Audio hardware control**, **clock-switching stability**, **mid-song playback lock**, and **runtime reliability**:
 
-### 1.1 Core Audio Hog Mode (Exclusive Hardware Access)
-* **Original Behavior**: Directly modifies `kAudioDevicePropertyNominalSampleRate` or the output stream's `physicalFormat` via SimplyCoreAudio. In multi-app environments, concurrent audio sessions or driver latency could cause clock contention and audio dropouts.
-* **Enhanced Implementation**:
-  * Requests exclusive hardware access (`kAudioDevicePropertyHogMode`) before applying any sample rate or format change.
-  * Strictly conforms to Apple's Core Audio HAL specification using global scope (`kAudioObjectPropertyScopeGlobal`) and master element (`kAudioObjectPropertyElementMaster`).
-  * Features comprehensive error handling: automatically decodes and displays Core Audio `OSStatus` as 4-character codes (FourCC, e.g., `'nope'`, `'stop'`, `'!obj'`) in debug logs for rapid hardware diagnostics.
-
-### 1.2 Atomic Rate Switch Architecture
-* **The Problem**: If a helper utility holds Hog Mode indefinitely, Core Audio considers only that utility (its Process ID) authorized to stream audio. Because **Apple Music** runs as a separate process, it would be blocked from accessing the DAC, causing immediate playback stalls or track-skipping loops.
+### 1.1 Pure Native Clock Switching (Eliminating USB DAC Lockout & Device Dropping)
+* **The Problem**: Core Audio's `kAudioDevicePropertyHogMode` is process-exclusive. When an external helper process attempts to acquire Hog Mode on USB DACs (such as XMOS, Topping, FiiO, SMSL, etc.), the DAC's USB audio endpoint becomes locked to that single process. macOS CoreAudio HAL then marks the DAC as unavailable to system audio, automatically evicting the DAC and redirecting system output to the built-in MacBook speakers. Subsequent attempts to select the DAC in Sound Settings cause macOS to hang spinning indefinitely.
 * **Enhanced Solution**:
-  * Implements the industry-standard **Atomic Switch Sequence**:
-    $$\text{Acquire Hog Mode} \longrightarrow \text{Set Hardware Clock / Format} \longrightarrow \text{Relinquish Hog Mode (Write 0)}$$
-  * This guarantees 100% exclusive protection during the sensitive hardware clock reconfiguration phase, and instantly returns audio streaming rights to Apple Music once the clock is locked.
+  * Utilizes pure, native Core Audio HAL nominal sample rate switching (`kAudioDevicePropertyNominalSampleRate`) without requesting Hog Mode.
+  * Ensures bit-perfect point-to-point output without locking the USB controller or conflicting with Apple Music and system processes.
+
+### 1.2 Hog Mode Anti-Toggle Safeguard
+* **Core Discovery**: Per Apple's Core Audio HAL specification, writing to `kAudioDevicePropertyHogMode` ignores the value passed and acts as a state toggle. If `AudioObjectSetPropertyData` is executed on an already un-hogged device (`-1`), Core Audio HAL erroneously toggles it back to hogged!
+* **Enhanced Solution**:
+  * Added strict pre-flight validation: if `currentPID == -1` or `currentPID != myPID`, the app strictly skips `AudioObjectSetPropertyData`, preventing any unintentional re-acquisition of Hog Mode.
 
 ### 1.3 Fix for System Notification Deadlocks
 * **Original Issue**: Modifying the DAC's sample rate triggers a system-wide `kAudioHardwarePropertyDefaultOutputDevice` event, which SimplyCoreAudio broadcasts as `.defaultOutputDeviceChanged`. Without identity checking, the app mistook clock changes for the user plugging in a different device, immediately triggering an un-hog routine and firing an infinite notification loop that interrupted playback every 1–2 seconds.

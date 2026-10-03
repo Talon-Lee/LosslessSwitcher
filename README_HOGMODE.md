@@ -11,18 +11,16 @@
 
 本版本在原版基礎上，針對 **macOS Core Audio 硬體底層控制**、**時鐘切換安全性**、**播放中途防跳歌鎖定** 與 **程式穩定度** 進行了深度重構與強化：
 
-### 1. 引入 Core Audio Hog Mode（硬體獨佔控制）
-* **原版行為**：直接透過 SimplyCoreAudio 寫入 `kAudioDevicePropertyNominalSampleRate` 或音訊流的 `physicalFormat`。當系統有其他應用程式同時佔用或嘗試調整音訊介面時，容易產生時鐘競爭與底層衝突。
+### 1. 純淨原生時鐘切換（解決 USB DAC 鎖死與跳開問題）
+* **問題背景**：macOS Core Audio 的 `kAudioDevicePropertyHogMode` 為行程獨佔開關。當音訊切換工具向外接 USB DAC（如 XMOS、Topping、FiiO 等控制器）請求 Hog Mode 時，DAC 的 USB 端點會被單一行程綁死，導致 macOS 系統偵測到 DAC 被獨佔排擠，進而自動將系統預設輸出強制跳轉至「MacBook 內建揚聲器」，並在音訊設定中發生無法切回、無限 Loading 轉圈的情況。
 * **強化版改進**：
-  * 在硬體時鐘切換前，主動向 Core Audio 要求 `kAudioDevicePropertyHogMode`（獨佔存取權）。
-  * 嚴格遵循 Core Audio 規範，使用全域作用域 `kAudioObjectPropertyScopeGlobal` 與主要元素 `kAudioObjectPropertyElementMaster`。
-  * 具備完整錯誤捕捉：自動將 `OSStatus` 轉譯為 4 字元可讀代碼（FourCC，如 `'nope'`, `'stop'` 等），便於診斷硬體相容性。
+  * 全面改用 Core Audio HAL 原生安全的直接時鐘切換（Direct Nominal Sample Rate），**不再向 USB DAC 強索 Hog Mode**，徹底避免硬體端點被驅動鎖死。
+  * 支援點對點 Bit-Perfect 取樣率無損直通（44.1k ～ 192k），硬體切換順暢，系統永遠不會被踢出 DAC，控制中心選取設備秒切不卡死。
 
-### 2. 原子性時鐘切換架構（Atomic Rate Switch）
-* **問題背景**：若第三方輔助軟體長時間強佔 Hog Mode，由於播放音樂的實際行程是 Apple Music（PID 不同），Apple Music 會被 Core Audio 判定為「無權使用該 DAC」而導致音訊串流中斷或跳歌。
+### 2. Hog Mode 安全釋放防護（防止反向 Toggle）
+* **底層發現**：根據 Apple Core Audio HAL 規範，`kAudioDevicePropertyHogMode` 寫入時會忽略傳入的數值，本質為 Toggle 機制。若對未獨佔（`-1`）的設備重複執行釋放，反而會反向誤觸發獨佔。
 * **強化版改進**：
-  * 採用音訊工程標準做法：**「取得獨佔權 ➔ 設定硬體新時鐘 ➔ 立即將 Hog Mode 寫回 0」**。
-  * 既確保了時鐘切換時不受任何外部干擾，切換後又立即將音訊串流通道歸還給 Apple Music，兼顧硬體純淨性與流暢播放。
+  * 加入前置檢驗：當 `currentPID == -1` 或非本行程時，嚴格禁止呼叫 `AudioObjectSetPropertyData`，徹底杜絕反向觸發獨佔的隱患。
 
 ### 3. 修復系統通知死循環（徹底解決跳歌問題）
 * **原版問題**：當 DAC 時鐘改變時，macOS 會廣播 `.defaultOutputDeviceChanged` 通知。原版與初版監聽器若未嚴格過濾，會誤判為使用者手動切換裝置，導致程式反覆執行釋放與重新抓取，造成 DAC 緩衝區每秒重置、歌曲被強制切斷。

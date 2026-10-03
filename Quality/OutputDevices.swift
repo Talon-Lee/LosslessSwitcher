@@ -276,19 +276,13 @@ class OutputDevices: ObservableObject {
                 let needsChange = enableBitDepthDetection ? formatChanged : sampleRateChanged
                 
                 if needsChange {
-                    print("[Switch] 檢測到取樣率規格改變，準備切換至 \(targetSampleRate) Hz...")
-                    // 1. 在更改取樣率前，先透過 kAudioDevicePropertyHogMode 取得該音訊輸出裝置的獨佔控制權
-                    self.acquireHogMode(for: targetDevice)
-                    
+                    print("[Switch] 檢測到取樣率規格改變，平順切換硬體時鐘至 \(targetSampleRate) Hz...")
                     if enableBitDepthDetection {
                         self.setFormats(device: targetDevice, format: suitableFormat)
                     }
                     else {
                         targetDevice.setNominalSampleRate(targetSampleRate)
                     }
-                    
-                    // 2. 切換硬體完成後，立即釋放 Hog Mode（寫回 0），讓音訊伺服器與 Apple Music 順暢串流播放，避免歌曲被中斷
-                    self.releaseHogMode(for: targetDevice.id)
                 }
                 
                 self.updateSampleRate(targetSampleRate)
@@ -425,7 +419,7 @@ class OutputDevices: ObservableObject {
         self.switchLatestSampleRate()
     }
     
-    // MARK: - Core Audio Hog Mode (獨佔控制)
+    // MARK: - Core Audio Hog Mode (安全釋放防護)
     
     /// 將 OSStatus 錯誤碼轉為 4 字元可讀字串（如 'nope', '!obj', 'stop' 等）
     private func fourCharCode(from status: OSStatus) -> String {
@@ -442,99 +436,19 @@ class OutputDevices: ObservableObject {
         return "\(status)"
     }
     
-    /// 安全取得音訊裝置的獨佔存取權 (Hog Mode)
+    /// 停用取得獨佔模式以防 USB DAC (如 XMOS 等) 被系統判定為獨佔排擠而跳轉至內建揚聲器
     @discardableResult
     func acquireHogMode(for device: AudioDevice) -> Bool {
-        return acquireHogMode(for: device.id)
+        return false
     }
     
-    /// 安全取得音訊裝置的獨佔存取權 (Hog Mode)
+    /// 停用取得獨佔模式以防 USB DAC (如 XMOS 等) 被系統判定為獨佔排擠而跳轉至內建揚聲器
     @discardableResult
     func acquireHogMode(for deviceID: AudioObjectID) -> Bool {
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioDevicePropertyHogMode,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMaster
-        )
-        
-        // 1. 檢查裝置是否支援 Hog Mode
-        guard AudioObjectHasProperty(deviceID, &address) else {
-            print("[CoreAudio HogMode] 裝置 ID: \(deviceID) 不支援 kAudioDevicePropertyHogMode 屬性")
-            return false
-        }
-        
-        let myPID = getpid()
-        
-        // 2. 查詢當前 Hog Mode 擁有者
-        var currentPID: pid_t = -1
-        var dataSize = UInt32(MemoryLayout<pid_t>.size)
-        let getStatus = AudioObjectGetPropertyData(
-            deviceID,
-            &address,
-            0,
-            nil,
-            &dataSize,
-            &currentPID
-        )
-        
-        if getStatus != noErr {
-            let codeStr = fourCharCode(from: getStatus)
-            print("[CoreAudio HogMode] ❌ 無法讀取裝置 ID: \(deviceID) 的 Hog Mode。錯誤碼: \(getStatus) ('\(codeStr)')")
-            return false
-        }
-        
-        // 若當前行程已擁有獨佔權，直接記錄並返回成功
-        if currentPID == myPID {
-            self.hoggedDeviceID = deviceID
-            print("[CoreAudio HogMode] ℹ️ 當前行程 (PID: \(myPID)) 已擁有裝置 ID: \(deviceID) 的獨佔控制權")
-            return true
-        }
-        
-        // 若已有其他裝置被本行程鎖定，先釋放舊裝置
-        if let previousID = self.hoggedDeviceID, previousID != deviceID {
-            self.releaseHogMode(for: previousID)
-        }
-        
-        // 3. 檢查屬性是否可寫入
-        var isSettable: DarwinBoolean = false
-        let settableStatus = AudioObjectIsPropertySettable(deviceID, &address, &isSettable)
-        if settableStatus != noErr || !isSettable.boolValue {
-            let codeStr = fourCharCode(from: settableStatus)
-            print("[CoreAudio HogMode] ❌ 裝置 ID: \(deviceID) 的 Hog Mode 不可寫入。錯誤碼: \(settableStatus) ('\(codeStr)')")
-            return false
-        }
-        
-        // 4. 寫入當前 process pid_t 請求獨佔模式 (使用 kAudioObjectPropertyScopeGlobal 與 kAudioObjectPropertyElementMaster)
-        var requestPID = myPID
-        let setStatus = AudioObjectSetPropertyData(
-            deviceID,
-            &address,
-            0,
-            nil,
-            dataSize,
-            &requestPID
-        )
-        
-        if setStatus != noErr {
-            let codeStr = fourCharCode(from: setStatus)
-            print("[CoreAudio HogMode] ❌ 取得獨佔模式失敗！裝置 ID: \(deviceID), PID: \(myPID), 錯誤碼: \(setStatus) ('\(codeStr)')")
-            return false
-        }
-        
-        // 5. 驗證是否成功取得獨佔控制
-        var confirmedPID: pid_t = -1
-        let verifyStatus = AudioObjectGetPropertyData(deviceID, &address, 0, nil, &dataSize, &confirmedPID)
-        if verifyStatus == noErr && confirmedPID != myPID {
-            print("[CoreAudio HogMode] ⚠️ 寫入成功但裝置當前擁有者為 PID: \(confirmedPID)（預期 PID: \(myPID)），可能被其他優先程序搶佔")
-            return false
-        }
-        
-        self.hoggedDeviceID = deviceID
-        print("[CoreAudio HogMode] ✅ 成功取得裝置 ID: \(deviceID) 的獨佔模式 (PID: \(myPID))")
-        return true
+        return false
     }
     
-    /// 釋放音訊裝置的獨佔存取權 (Hog Mode)，將其值寫回 0
+    /// 安全釋放音訊裝置的獨佔存取權 (Hog Mode)
     @discardableResult
     func releaseHogMode(for specificDeviceID: AudioObjectID? = nil) -> Bool {
         let targetID = specificDeviceID ?? hoggedDeviceID
@@ -558,17 +472,24 @@ class OutputDevices: ObservableObject {
         var dataSize = UInt32(MemoryLayout<pid_t>.size)
         let getStatus = AudioObjectGetPropertyData(deviceID, &address, 0, nil, &dataSize, &currentPID)
         
-        // 若當前獨佔者不是本程序，且也不是已被釋放 (-1) 或 0，則不應越權釋放其他 App 的獨佔
-        if getStatus == noErr && currentPID != myPID && currentPID != -1 && currentPID != 0 {
-            print("[CoreAudio HogMode] ⚠️ 裝置 ID: \(deviceID) 獨佔者為 PID: \(currentPID)，非本行程 (PID: \(myPID))，略過釋放")
+        // 若當前裝置根本未被獨佔 (-1)，絕對不可呼叫 SetPropertyData，否則 Core Audio HAL 會將其反向觸發為獨佔！
+        if getStatus == noErr && (currentPID == -1 || currentPID == 0) {
+            if self.hoggedDeviceID == deviceID {
+                self.hoggedDeviceID = nil
+            }
+            return true
+        }
+        
+        // 若當前獨佔者不是本程序，不可越權操作
+        if getStatus == noErr && currentPID != myPID {
             if self.hoggedDeviceID == deviceID {
                 self.hoggedDeviceID = nil
             }
             return false
         }
         
-        // 極度重要：將 Hog Mode 的值寫回 0，釋放 DAC 獨佔權，避免硬體被永久鎖死
-        var releasePID: pid_t = 0
+        // 只有當本程序 (myPID) 確實持有獨佔權時，才呼叫 SetPropertyData 釋放（切回 -1）
+        var releasePID: pid_t = -1
         let status = AudioObjectSetPropertyData(
             deviceID,
             &address,
@@ -578,16 +499,9 @@ class OutputDevices: ObservableObject {
             &releasePID
         )
         
-        if status != noErr {
-            let codeStr = fourCharCode(from: status)
-            print("[CoreAudio HogMode] ❌ 釋放獨佔模式失敗！裝置 ID: \(deviceID), 錯誤碼: \(status) ('\(codeStr)')")
-            return false
-        }
-        
         if self.hoggedDeviceID == deviceID {
             self.hoggedDeviceID = nil
         }
-        print("[CoreAudio HogMode] 🔓 成功釋放裝置 ID: \(deviceID) 的獨佔模式（值已寫回 0）")
-        return true
+        return status == noErr
     }
 }
