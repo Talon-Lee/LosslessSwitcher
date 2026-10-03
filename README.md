@@ -3,7 +3,10 @@
 
 </p>
 
-#  
+# Lossless Switcher 2.1 Ver
+
+> **Enhanced Edition with Core Audio Hog Mode, Playback Mid-Song Lock & macOS Dock Badge**  
+> 繁體中文說明文件：[README_HOGMODE.md](README_HOGMODE.md) | English Documentation: [README_HOGMODE_EN.md](README_HOGMODE_EN.md)
 
 LosslessSwitcher switches your current audio device's sample rate to match the currently playing lossless song on your Apple Music app, automatically.
 

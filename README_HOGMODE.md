@@ -1,14 +1,15 @@
-# LosslessSwitcher (Hog Mode 獨佔控制強化版) 繁體中文說明文件
+# Lossless Switcher 2.1 Ver (Hog Mode 獨佔控制與防跳歌鎖定強化版) 繁體中文說明文件
 
-> **版本**：2.0 (Build 21) Universal (Apple Silicon & Intel)  
+> **版本**：2.1 (Build 22) Universal (Apple Silicon & Intel)  
 > **安裝位置**：`/Applications/LosslessSwitcher.app`  
-> **基礎版本**：基於 Vincent Neo 的 LosslessSwitcher 2.0-beta1 原始碼重構強化
+> **專案名稱**：Lossless Switcher 2.1 Ver  
+> **基礎版本**：基於 Vincent Neo 的 LosslessSwitcher 2.0 原始碼深度重構強化
 
 ---
 
 ## 一、 相比原版的核心技術變更
 
-本版本在原版基礎上，針對 **macOS Core Audio 硬體底層控制**、**時鐘切換安全性** 與 **程式穩定度** 進行了深度重構與強化：
+本版本在原版基礎上，針對 **macOS Core Audio 硬體底層控制**、**時鐘切換安全性**、**播放中途防跳歌鎖定** 與 **程式穩定度** 進行了深度重構與強化：
 
 ### 1. 引入 Core Audio Hog Mode（硬體獨佔控制）
 * **原版行為**：直接透過 SimplyCoreAudio 寫入 `kAudioDevicePropertyNominalSampleRate` 或音訊流的 `physicalFormat`。當系統有其他應用程式同時佔用或嘗試調整音訊介面時，容易產生時鐘競爭與底層衝突。
@@ -51,6 +52,14 @@
   * 開啟 Dock 支援，讓 LosslessSwitcher 運行時常駐於 macOS Dock。
   * 整合 `NSApp.dockTile.badgeLabel`，自動將當前 DAC 取樣率（如 `44.1 kHz`、`96 kHz`、`192 kHz`）即時以醒目的數位徽章（Badge）標註於 Dock 圖示右上角。
   * 支援動態切換：歌曲切換或取樣率變更時，Dock 徽章與頂部選單列毫秒級同步更新；結束程式時自動清理標籤。
+
+### 8. 曲目播放中鎖定機制（Playback Mid-Song Lock）**【2.1 版全新重點】**
+* **原版問題**：在播放到一半時，常因 Apple Music 提前預解碼下一首歌（Pre-buffering / Gapless）、歌詞時間軸推播、或音量進度事件，導致系統日誌抓到下一首或虛假事件的取樣率，造成歌曲播放到一半 DAC 時鐘突然跳掉。
+* **強化版改進**：
+  * 引入歌曲指紋識別（比對 ID、歌名與演出者）與取樣率鎖定狀態機。
+  * 歌曲取樣率確定後即時加鎖（`isSongLocked = true`），徹底阻擋播放中途的降級誤切與下一曲預載日誌干擾。
+  * 智慧升級窗口：播放前 8 秒內，仍允許由 44.1k/48k 自動升級至 96k/192k Hi-Res，升級後自動固定鎖定。
+  * 只有在偵測到真正的「下一首新曲」開始播放時，才自動解除鎖定並執行切換。
 
 ---
 

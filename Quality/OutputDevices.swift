@@ -47,8 +47,35 @@ class OutputDevices: ObservableObject {
     var previousTrack: MediaTrack?
     var currentTrack: MediaTrack?
     
+    // MARK: - Playback Mid-Song Lock (播放中取樣率鎖定機制)
+    var isSongLocked: Bool = false
+    var lockedTrack: MediaTrack?
+    var lockedSampleRate: Float64?
+    var trackStartTime: Date = Date()
+    
     var timerActive = false
     var timerCalls = 0
+    
+    /// 判斷兩首曲目是否為同一首歌（比對 ID、歌名與演出者）
+    func isSameSong(_ track1: MediaTrack?, _ track2: MediaTrack?) -> Bool {
+        guard let t1 = track1, let t2 = track2 else { return false }
+        if let id1 = t1.id, let id2 = t2.id, !id1.isEmpty, id1 == id2 {
+            return true
+        }
+        if let title1 = t1.title, let title2 = t2.title, !title1.isEmpty,
+           let artist1 = t1.artist, let artist2 = t2.artist {
+            return title1 == title2 && artist1 == artist2
+        }
+        return t1 == t2
+    }
+    
+    /// 解除曲目取樣率鎖定（切換至新曲時呼叫）
+    func resetSongLock() {
+        self.isSongLocked = false
+        self.lockedTrack = nil
+        self.lockedSampleRate = nil
+        self.trackStartTime = Date()
+    }
     
     init() {
         self.outputDevices = self.coreAudio.allOutputDevices
@@ -70,11 +97,13 @@ class OutputDevices: ObservableObject {
                     self.releaseHogMode(for: currentHogged)
                 }
                 self.defaultOutputDevice = newDefault
+                self.resetSongLock()
                 self.getDeviceSampleRate()
             })
         
-        outputSelectionCancellable = selectedOutputDevice.publisher.sink(receiveValue: { _ in
-            self.getDeviceSampleRate()
+        outputSelectionCancellable = selectedOutputDevice.publisher.sink(receiveValue: { [weak self] _ in
+            self?.resetSongLock()
+            self?.getDeviceSampleRate()
         })
         
         // 當 App 準備退出時，釋放獨佔模式（寫回 0）
@@ -114,6 +143,13 @@ class OutputDevices: ObservableObject {
                     self.timerCalls = 0
                     self.timerCancellable?.cancel()
                     self.timerCancellable = nil
+                    // 輪詢週期結束後，若已有取樣率，強制確認鎖定
+                    if let currentRate = self.currentSampleRate, self.currentTrack != nil {
+                        self.isSongLocked = true
+                        self.lockedTrack = self.currentTrack
+                        self.lockedSampleRate = currentRate * 1000
+                        print("[Lock] 輪詢結束，歌曲「\(self.currentTrack?.title ?? "")」取樣率確認鎖定在 \(currentRate) kHz")
+                    }
                 }
                 else {
                     self.timerCalls += 1
@@ -187,6 +223,20 @@ class OutputDevices: ObservableObject {
             let sampleRate = Float64(first.sampleRate)
             let bitDepth = Int32(first.bitDepth)
             
+            // 播放中鎖定檢查：
+            // 如果當前歌曲已經處於鎖定狀態：
+            if self.isSongLocked, let lockedRate = self.lockedSampleRate, self.isSameSong(self.currentTrack, self.lockedTrack) {
+                // 僅在播放初期的 8 秒內，若 Apple Music 由 44.1k/48k 升級至更高解析度無損 (如 96k/192k)，允許升級
+                let elapsed = Date().timeIntervalSince(self.trackStartTime)
+                if elapsed < 8.0 && sampleRate > lockedRate {
+                    print("[Lock] 初播升級：歌曲「\(self.currentTrack?.title ?? "")」升級至高解析無損 (\(lockedRate) Hz -> \(sampleRate) Hz)")
+                } else {
+                    // 若歌曲已鎖定且非初期升級，強力阻擋中途跳轉（包含預載下一首、系統通知音訊等）
+                    print("[Lock] 播放中鎖定生效：歌曲「\(self.currentTrack?.title ?? "")」已鎖定在 \(lockedRate) Hz，忽略中途非預期變更 (候選值: \(sampleRate) Hz)")
+                    return
+                }
+            }
+            
             if self.currentTrack == self.previousTrack, let prevSampleRate = currentSampleRate, prevSampleRate > sampleRate {
                 print("same track, prev sample rate is higher")
                 return
@@ -244,6 +294,15 @@ class OutputDevices: ObservableObject {
                 self.updateSampleRate(targetSampleRate)
                 if let currentTrack = currentTrack {
                     self.trackAndSample[currentTrack] = targetSampleRate
+                }
+                
+                // 設定鎖定狀態
+                self.lockedTrack = self.currentTrack
+                self.lockedSampleRate = targetSampleRate
+                // 若已達 88.2 kHz 以上之高解析無損，或是播放已超過 4 秒，立即鎖定防止中途被干擾
+                if targetSampleRate >= 88200 || Date().timeIntervalSince(self.trackStartTime) >= 4.0 {
+                    self.isSongLocked = true
+                    print("[Lock] 成功鎖定歌曲「\(self.currentTrack?.title ?? "")」取樣率至 \(targetSampleRate) Hz")
                 }
             }
 
@@ -344,11 +403,25 @@ class OutputDevices: ObservableObject {
     }
     
     func trackDidChange(_ newTrack: TrackInfo) {
-        self.previousTrack = self.currentTrack
-        self.currentTrack = MediaTrack(trackInfo: newTrack)
-        if self.previousTrack != self.currentTrack {
-            self.renewTimer()
+        let incomingTrack = MediaTrack(trackInfo: newTrack)
+        
+        // 若為同一首歌曲且取樣率已穩定鎖定，過濾掉歌詞滾動、進度時間軸同步等中途事件
+        if self.isSameSong(incomingTrack, self.currentTrack) && self.isSongLocked {
+            return
         }
+        
+        let isGenuinelyNewTrack = !self.isSameSong(incomingTrack, self.currentTrack)
+        if isGenuinelyNewTrack {
+            print("[Track] 檢測到新歌曲: 「\(incomingTrack.title ?? "未知") - \(incomingTrack.artist ?? "未知")」，解除舊曲鎖定狀態")
+            self.resetSongLock()
+            self.previousTrack = self.currentTrack
+            self.currentTrack = incomingTrack
+            self.renewTimer()
+        } else {
+            self.previousTrack = self.currentTrack
+            self.currentTrack = incomingTrack
+        }
+        
         self.switchLatestSampleRate()
     }
     

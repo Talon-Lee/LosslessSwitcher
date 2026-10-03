@@ -1,14 +1,14 @@
-# LosslessSwitcher (Hog Mode Enhanced Edition) Documentation
+# Lossless Switcher 2.1 Ver (Hog Mode & Mid-Song Lock Edition) Documentation
 
-> **Version**: 2.0 (Build 21) Universal (Apple Silicon & Intel)  
+> **Version**: 2.1 (Build 22) Universal (Apple Silicon & Intel)  
 > **Installation Path**: `/Applications/LosslessSwitcher.app`  
-> **Base Project**: Forked and refactored from Vincent Neo's LosslessSwitcher 2.0-beta1
-
+> **Project Name**: Lossless Switcher 2.1 Ver  
+> **Base Project**: Forked and refactored from Vincent Neo's LosslessSwitcher 2.0
 ---
 
 ## 1. Key Technical Enhancements (Compared to Original)
 
-This version introduces deep architectural improvements targeting **macOS Core Audio hardware control**, **clock-switching stability**, and **runtime reliability**:
+This version introduces deep architectural improvements targeting **macOS Core Audio hardware control**, **clock-switching stability**, **mid-song playback lock**, and **runtime reliability**:
 
 ### 1.1 Core Audio Hog Mode (Exclusive Hardware Access)
 * **Original Behavior**: Directly modifies `kAudioDevicePropertyNominalSampleRate` or the output stream's `physicalFormat` via SimplyCoreAudio. In multi-app environments, concurrent audio sessions or driver latency could cause clock contention and audio dropouts.
@@ -52,6 +52,14 @@ This version introduces deep architectural improvements targeting **macOS Core A
   * Configured full Dock presentation support (`LSUIElement = NO` and `NSApp.setActivationPolicy(.regular)`).
   * Integrated `NSApp.dockTile.badgeLabel` to reflect the active DAC sample rate (e.g., `44.1 kHz`, `96 kHz`, `192 kHz`) dynamically on the app's Dock icon badge.
   * Real-time synchronization: Dock badge updates synchronously with track transitions and clears automatically on application quit.
+
+### 1.8 Playback Mid-Song Lock Mechanism (New in 2.1)
+* **Original Issue**: Midway through playback, Apple Music's background engine often pre-buffers the *next* track (generating log entries with the next track's sample rate), or emits periodic timeline/lyrics updates, causing the app to erroneously switch the DAC clock mid-song.
+* **Enhanced Solution**:
+  * Introduces track fingerprinting (`isSameSong`) and a dedicated sample rate locking state machine (`isSongLocked`).
+  * Locks the active track's sample rate once confirmed, blocking all mid-song downgrade attempts and pre-buffering interference.
+  * Adaptive initial upgrade window: during the initial playback window (first 8 seconds), upgrades from standard lossless (44.1/48 kHz) to Hi-Res (96/192 kHz) are permitted, followed by immediate locking.
+  * Automatically releases the lock only when a genuinely new track is detected by MediaRemote.
 
 ---
 
