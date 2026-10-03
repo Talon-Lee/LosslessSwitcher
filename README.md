@@ -14,6 +14,34 @@ Let's say if the next song that you are playing, is a Hi-Res Lossless track with
 
 The opposite happens, when the next track happens to have a lower sample rate. 
 
+## What's New in Version 2.1 (Key Changes & Solved Issues)
+
+This customized edition (`Lossless Switcher 2.1 Ver`) addresses several long-standing limitations, audio interruptions, and stability issues found in upstream versions:
+
+### 1. Playback Mid-Song Lock (Eliminating Unexpected Mid-Track Rate Jumps)
+* **The Problem**: In upstream versions, Apple Music frequently pre-buffers and decodes the *next* track midway through the current song (often 30–60 seconds in advance for gapless playback). The background log parser would detect the upcoming track's sample rate (often standard 44.1 kHz) and erroneously switch the DAC clock before the current song finished. Additionally, periodic timeline sync, lyrics scrolling, and system sounds could trigger false rate changes.
+* **The Solution**: Introduces a dedicated **Playback Mid-Song Lock** state machine. Once the active track's sample rate is established, it is locked (`isSongLocked`). Mid-song downgrade events and pre-buffering log entries are strictly ignored while the same track is playing. Only when a genuinely new track begins is the lock released. During the first 8 seconds of playback, seamless resolution upgrades (e.g., from a 44.1k/48k placeholder buffer to Hi-Res 96k/192k) are still permitted before locking.
+
+### 2. Core Audio Hog Mode (Exclusive Hardware Access Protection)
+* **The Problem**: Writing `kAudioDevicePropertyNominalSampleRate` directly can lead to hardware contention, driver race conditions, or audio glitches when multiple applications access the audio interface.
+* **The Solution**: Integrates an **Atomic Hog Mode** sequence (`acquireHogMode` $\rightarrow$ set sample rate $\rightarrow$ `releaseHogMode` back to `0`). This guarantees uninterrupted exclusive access during hardware clock reconfiguration, then immediately hands audio streaming rights back to Apple Music. Multi-tier safeguards guarantee Hog Mode is always released on app quit, track change, or device disconnection to prevent hardware deadlocks.
+
+### 3. Infinite Notification Loop & Track-Skipping Fix
+* **The Problem**: Changing the hardware clock fires macOS `.defaultOutputDeviceChanged` events. In original versions, this was easily misinterpreted as the user unplugging the DAC, causing an un-hog loop that cut off audio every 1–2 seconds and repeatedly skipped songs.
+* **The Solution**: Implemented strict hardware device ID diffing (`currentHogged != newID`) so rate changes never trigger false device disconnect routines.
+
+### 4. Real-Time macOS Dock Sample Rate Badge
+* **The Enhancement**: Converted the app from an accessory-only process to a full macOS application with Dock presence (`LSUIElement = NO`). The active DAC sample rate (e.g., `44.1 kHz`, `96 kHz`, `192 kHz`) is dynamically rendered on the app's Dock icon badge in real-time (`NSApp.dockTile.badgeLabel`).
+
+### 5. Redundant Switch & Jitter Filtering
+* **The Enhancement**: Added a `needsChange` pre-flight check. If the DAC is already running at the required sample rate (e.g., sequential playback of 44.1 kHz or 96 kHz tracks in an album), the app completely bypasses hardware clock commands, eliminating relay clicks and audio dropouts.
+
+### 6. Stability & Local Build Fixes
+* **The Problem**: Upstream code crashed on startup with fatal unwrapping errors (`as!`) when bundle version dictionaries were absent in custom builds.
+* **The Solution**: Replaced forced unwrapping in `AppVersion.swift` with safe optional fallback defaults, and configured universal ad-hoc codesigning with Hardened Runtime compatibility for immediate, error-free deployment.
+
+---
+
 ## Installation
 Simply go to the Releases page of this repository or via [link to latest release](https://github.com/vincentneo/LosslessSwitcher/releases/latest)
 
